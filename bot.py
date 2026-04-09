@@ -1,95 +1,45 @@
-import os
+import jellyfish # Advanced phonetics
 import httpx
-import jellyfish
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import re
 
-# --- CORE LOGIC: R-METHOD (Scrapers) ---
+# --- 1000+ ITEMS PHONETIC ENGINE ---
+TOP_1000_BRANDS = ["Apple", "Google", "Microsoft", "Amazon", "Samsung", "Toyota"] # Extend this list to 1000
 
-async def check_netlify(name):
-    """Checks if name.netlify.app is taken by pinging it."""
-    url = f"https://{name.lower()}.netlify.app"
+def check_global_conflicts(name):
+    conflicts = []
+    for brand in TOP_1000_BRANDS:
+        # Jaro-Winkler gives a score from 0.0 to 1.0
+        similarity = jellyfish.jaro_winkler_similarity(name.lower(), brand.lower())
+        if similarity > 0.85: # 85% similarity threshold
+            conflicts.append(f"{brand} ({int(similarity*100)}%)")
+    return conflicts
+
+# --- GOVT & IPO DEEP SCAN (The DuckDuckGo Proxy) ---
+async def check_govt_records(name):
+    """Uses search engine dorks to find government filings without an API."""
+    search_query = f'site:ipo.gov.pk "{name}"'
+    url = f"https://duckduckgo.com/html/?q={search_query}"
+    
     async with httpx.AsyncClient() as client:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         try:
-            response = await client.get(url, timeout=5.0)
-            # If it returns 200 or 403, it exists. 404 means it's likely free.
-            return "❌ Taken" if response.status_code != 404 else "✅ Free"
-        except httpx.ConnectError:
-            return "✅ Free"
-        except Exception:
-            return "⚠️ Error"
-
-async def check_social(platform_url, name):
-    """General scraper for socials like Instagram/X/GitHub."""
-    url = platform_url.format(name.lower())
-    async with httpx.AsyncClient() as client:
-        try:
-            # We use a mobile User-Agent to avoid some blocks
-            headers = {"User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36"}
-            response = await client.get(url, headers=headers, timeout=5.0)
-            return "❌ Taken" if response.status_code == 200 else "✅ Free"
+            response = await client.get(url, headers=headers)
+            # If the search results contain the name, it's likely a registered trademark
+            if name.lower() in response.text.lower():
+                return "❌ Potential IPO Record Found"
+            return "✅ No IPO Records Found"
         except:
-            return "⚠️ Timeout"
+            return "⚠️ Scan Interrupted"
 
-# --- CORE LOGIC: G-METHOD (Smart Phonetics) ---
-
-def get_phonetic_risk(name):
-    """Uses Soundex to see if the name sounds too much like a big brand."""
-    # List of big tech brands to avoid 'Sound-Alikes'
-    big_brands = ["Google", "Facebook", "Amazon", "Netflix", "Apple", "Microsoft"]
-    user_sound = jellyfish.soundex(name)
-    
-    risks = []
-    for brand in big_brands:
-        if jellyfish.soundex(brand) == user_sound:
-            risks.append(brand)
-    
-    return risks
-
-# --- TELEGRAM BOT HANDLERS ---
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🚀 **BrandGuard AI v1.0**\n\n"
-        "Send me a name (e.g., 'HyBox') and I will scan the digital universe for you.\n"
-        "Brought to you by **Malik Softwebs X HyBox**."
-    )
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    brand_name = update.message.text.strip()
-    wait_msg = await update.message.reply_text(f"🔍 Scanning '{brand_name}'... please wait.")
-
-    # 1. Phonetic Check
-    phonetic_conflicts = get_phonetic_risk(brand_name)
-    risk_status = "⚠️ Warning" if phonetic_conflicts else "✅ Clean"
-    
-    # 2. Domain Check
-    netlify_status = await check_netlify(brand_name)
-    
-    # 3. Social Check
-    insta_status = await check_social("https://www.instagram.com/{}/", brand_name)
-    github_status = await check_social("https://github.com/{}", brand_name)
-
-    report = (
-        f"📊 **Brand Report: {brand_name}**\n\n"
-        f"🔹 **Phonetic Risk:** {risk_status}\n"
-        f"{'   (Sounds like: ' + ', '.join(phonetic_conflicts) + ')' if phonetic_conflicts else '   No major sound-alikes found.'}\n\n"
-        f"🌐 **Web Presence:**\n"
-        f"• Netlify: {netlify_status}\n"
-        f"• GitHub: {github_status}\n"
-        f"• Instagram: {insta_status}\n\n"
-        f"💡 *Advice: If Netlify is taken but GitHub is free, you can still secure the code namespace!*"
-    )
-
-    await wait_msg.edit_text(report, parse_mode='Markdown')
-
-if __name__ == '__main__':
-    # Use your Bot Token from @BotFather
-    TOKEN = "8697874067:AAFso3HzikgTXPIhRcxtFxXipOmEoR3L3MY"
-    app = ApplicationBuilder().token(TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    print("Bot is running...")
-    app.run_polling()
+# --- OPEN CORPORATES SCAN ---
+async def check_corporates(name):
+    """Checks if the name is a registered company name globally."""
+    url = f"https://opencorporates.com/companies?q={name}"
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.get(url, follow_redirects=True)
+            if "No companies found" in res.text:
+                return "✅ Name is Unique"
+            return "❌ Existing Company Found"
+        except:
+            return "⚠️ Database Busy"
